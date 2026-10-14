@@ -43,13 +43,13 @@ with tempfile.TemporaryDirectory(prefix='panda-package-') as tmp:
     shutil.copy2(installer, stage/'Install')
     shutil.copy2(root/'Install.command', stage/'Install.command')
     shutil.copy2(root/'LICENSE', stage/'LICENSE')
-    (stage/'安装说明.txt').write_text('熊猫伴行 Panda Companion\n\n1. 退出正在运行的熊猫伴行。\n2. 双击 Install.command 安装到当前用户。无需 Python 或编译工具链。\n3. 从 ~/Applications/熊猫伴行.app 打开。\n\n个人配置与自动维护状态会保留。新用户请先添加规则，再开启维护。\n当前应用与安装器仅临时签名，未经 Apple 公证。请遵循系统安全确认流程。\n')
+    shutil.copy2(root/'INSTALL.md', stage/'INSTALL.md')
     (stage/'manifest.json').write_text(json.dumps({'version': version, 'architecture': arch, 'minimum_macos': '14.0', 'source_commit': os.environ.get('GITHUB_SHA', ''), 'notarized': False}, indent=2) + '\n')
     subprocess.run(['ditto', '-c', '-k', '--keepParent', str(stage), str(archive)], check=True)
     with zipfile.ZipFile(archive) as zipped:
         assert zipped.testzip() is None
         names = zipped.namelist()
-        for required in ['Install', 'Install.command', 'LICENSE', 'manifest.json', 'PandaCompanion.app/Contents/MacOS/PandaCompanion', 'PandaCompanion.app/Contents/Resources/panda-companion']:
+        for required in ['Install', 'Install.command', 'LICENSE', 'INSTALL.md', 'manifest.json', 'PandaCompanion.app/Contents/MacOS/PandaCompanion', 'PandaCompanion.app/Contents/Resources/panda-companion']:
             assert name + '/' + required in names, required
         assert not any('/.git/' in item or '/diagnostics/' in item or item.endswith('changes.log') for item in names)
     unpacked = pathlib.Path(tmp)/'unpacked'

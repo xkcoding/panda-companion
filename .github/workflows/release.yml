@@ -78,6 +78,7 @@ jobs:
           下载对应架构的 ZIP，解压后运行 Install.command。安装包包含原生安装器，无需 Python 或编译工具链。
           arm64：Apple Silicon；x86_64：Intel。最低系统目标 macOS 14。
           应用与安装器为临时签名，尚未经 Developer ID 签名或 Apple 公证。
+          首次运行被拦截时，请参考包内 INSTALL.md或仓库 README 的安装章节，在系统设置中为对应程序单独确认打开。
           NOTES
           # Retry only a draft created by an interrupted release; never replace a published release.
           if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft-state; then
