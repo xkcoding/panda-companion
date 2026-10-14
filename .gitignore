@@ -1,0 +1,14 @@
+# Generated output
+/build/
+.DS_Store
+__pycache__/
+*.pyc
+
+# Local diagnostics and private configuration
+/diagnostics/
+/performance-*.json
+/changes.log
+/config.local.conf
+*.log
+.env
+.env.*

@@ -1,0 +1,245 @@
+#!/bin/zsh
+# Company Direct: local-only, additive proxy exceptions. No sudo or network requests.
+emulate -LR zsh
+setopt PIPE_FAIL
+export LC_ALL=C
+umask 077
+
+readonly label=local.company-direct.guard
+readonly base="$HOME/Library/Application Support/CompanyDirect"
+readonly agent="$HOME/Library/LaunchAgents/$label.plist"
+readonly log="$base/changes.log"
+readonly target="gui/$UID/$label"
+typeset -a required=()
+typeset proxy_host=127.0.0.1 proxy_port=10080 check_interval=10 watch_changes=1
+
+# Data only. Never source/eval the configuration file.
+load_config() {
+  local config_path="${1:-$base/config.conf}" line key value labelpart plain
+  [[ -f "$config_path" ]] || return 0
+  local -A seen
+  local -a domains
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    [[ "$line" == *=* ]] || return 1
+    key="${line%%=*}"; value="${line#*=}"
+    [[ "$key" == domain || -z "${seen[$key]}" ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      version) [[ "$value" == 1 ]] || return 1 ;;
+      host) [[ "$value" == 127.0.0.1 || "$value" == localhost || "$value" == ::1 ]] || return 1; proxy_host="$value" ;;
+      port) [[ "$value" == <-> ]] && (( value >= 1 && value <= 65535 )) || return 1; proxy_port="$value" ;;
+      interval) [[ "$value" == <-> ]] && (( value >= 5 && value <= 300 )) || return 1; check_interval="$value" ;;
+      watch) [[ "$value" == 0 || "$value" == 1 ]] || return 1; watch_changes="$value" ;;
+      domain)
+        [[ ${#value} -le 253 && "$value" =~ '^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$' ]] || return 1
+        plain="${value#\*.}"
+        for labelpart in "${(@s:.:)plain}"; do (( ${#labelpart} <= 63 )) || return 1; done
+        (( ${domains[(Ie)$value]} )) || domains+=("$value") ;;
+      *) return 1 ;;
+    esac
+  done < "$config_path"
+  [[ -n "${seen[version]}" && -n "${seen[host]}" && -n "${seen[port]}" && -n "${seen[interval]}" && -n "${seen[watch]}" ]] || return 1
+  (( ${#domains} <= 200 )) || return 1
+  required=("${domains[@]}")
+}
+
+is_panda_proxy() {
+  /usr/bin/awk -F ': ' -v expected_host="$proxy_host" -v expected_port="$proxy_port" '
+    $1 == "Enabled" { enabled=($2=="Yes") }
+    $1 == "Server" { host=($2==expected_host) }
+    $1 == "Port" { port=($2==expected_port) }
+    END { exit !(enabled && host && port) }'
+}
+
+merge_rules() {
+  local existing="$1" rule
+  local -a rules
+  [[ -n "$existing" ]] && rules=("${(@f)existing}")
+  for rule in "${required[@]}"; do
+    (( ${rules[(Ie)$rule]} )) || rules+=("$rule")
+  done
+  print -rl -- "${rules[@]}"
+}
+
+has_rules() {
+  local input="$1" rule
+  local -a rules=("${(@f)input}")
+  for rule in "${required[@]}"; do
+    (( ${rules[(Ie)$rule]} )) || return 1
+  done
+}
+
+record() {
+  /bin/mkdir -p "$base"
+  if [[ -f "$log" ]] && (( $(/usr/bin/stat -f %z "$log") > 65536 )); then
+    /usr/bin/tail -n 100 "$log" > "$log.trim"
+    /bin/mv "$log.trim" "$log"
+  fi
+  print -r -- "$(/bin/date '+%Y-%m-%d %H:%M:%S') $*" >> "$log"
+}
+
+target_service() {
+  local service="$1" kind info
+  for kind in webproxy securewebproxy socksfirewallproxy; do
+    info=$(/usr/sbin/networksetup "-get$kind" "$service" 2>/dev/null) || continue
+    print -r -- "$info" | is_panda_proxy && return 0
+  done
+  return 1
+}
+
+active_panda_proxy() {
+  local snapshot="$1"
+  print -r -- "$snapshot" | /usr/bin/awk -v expected_host="$proxy_host" -v expected_port="$proxy_port" '
+      $2 == ":" { values[$1]=$3 }
+      END {
+        split("HTTP HTTPS SOCKS", protocols, " "); found=0
+        for (i in protocols) {
+          p=protocols[i]
+          if (values[p "Enable"]==1 && values[p "Port"]==expected_port && values[p "Proxy"]==expected_host) found=1
+        }
+        exit !found
+      }'
+}
+
+reconcile() {
+  local mode="$1" snapshot services service existing merged output check rule
+  local -a rules
+  local count=0 failed=0
+  if (( ${#required} == 0 )); then
+    [[ "$mode" != check ]] && print "直连规则：尚未添加"
+    return 0
+  fi
+  if ! /usr/bin/pgrep -u "$UID" -x PandaFan >/dev/null; then
+    [[ "$mode" != check ]] && print 'PandaFan 未运行，助手等待客户端启动。'
+    return 0
+  fi
+
+  # Fast path: no networksetup calls on the regular timer when already healthy.
+  snapshot=$(/usr/sbin/scutil --proxy) || return 1
+  if ! active_panda_proxy "$snapshot"; then
+    [[ "$mode" != check ]] && print '当前系统代理未匹配 PandaFan，助手等待，不修改规则。'
+    return 0
+  fi
+  if [[ "$mode" == check ]]; then
+      check=$(print -r -- "$snapshot" | /usr/bin/awk '/^[[:space:]]+[0-9]+ : / {sub(/^[[:space:]]+[0-9]+ : /, ""); print}')
+      has_rules "$check" && return 0
+  fi
+
+  /bin/mkdir -p "$base"
+  # Prevent simultaneous shortcut and launchd repairs. Recover a dead owner's lock.
+  if ! /bin/mkdir "$base/repair.lock" 2>/dev/null; then
+    local owner=""
+    [[ -f "$base/repair.lock/pid" ]] && owner=$(<"$base/repair.lock/pid")
+    if [[ "$owner" == <-> ]] && ! /bin/kill -0 "$owner" 2>/dev/null; then
+      /bin/rm -f "$base/repair.lock/pid"
+      /bin/rmdir "$base/repair.lock" 2>/dev/null
+      /bin/mkdir "$base/repair.lock" 2>/dev/null || return 0
+    else
+      [[ "$mode" != check ]] && print '已有一次检查正在进行，请稍后查看状态。'
+      return 0
+    fi
+  fi
+  print -r -- "$$" > "$base/repair.lock/pid"
+  trap '/bin/rm -f "$base/repair.lock/pid"; /bin/rmdir "$base/repair.lock" 2>/dev/null' EXIT
+
+  services=$(/usr/sbin/networksetup -listallnetworkservices) || return 1
+  for service in "${(@f)services}"; do
+    [[ "$service" == 'An asterisk'* || "$service" == \** || -z "$service" ]] && continue
+    target_service "$service" || continue
+    (( count++ ))
+    existing=$(/usr/sbin/networksetup -getproxybypassdomains "$service") || { failed=1; continue; }
+    [[ "$existing" == "There aren't any bypass domains set on "* ]] && existing=""
+    has_rules "$existing" && continue
+    merged=$(merge_rules "$existing")
+    rules=("${(@f)merged}")
+    # Recheck ownership immediately before writing; never toggle proxy switches.
+    target_service "$service" || continue
+    output=$(/usr/sbin/networksetup -setproxybypassdomains "$service" "${rules[@]}" 2>&1)
+    check=$(/usr/sbin/networksetup -getproxybypassdomains "$service")
+    if has_rules "$check"; then
+      record "已补齐 $service 的直连规则。"
+    else
+      failed=1
+      if [[ ! -f "$base/last-error" || "$(<"$base/last-error")" != "$service: $output" ]]; then
+        print -r -- "$service: $output" > "$base/last-error"
+        record "修复失败：$service；请运行立即修复查看权限。"
+      fi
+    fi
+  done
+  if (( failed )); then
+    [[ "$mode" != check ]] && print '未能写入代理例外，请检查当前账户的网络设置权限。'
+    return 1
+  fi
+  /bin/rm -f "$base/last-error"
+  if [[ "$mode" != check ]]; then
+    (( count )) && print '直连规则已就绪，其他代理设置保持不变。' || print '当前没有启用 PandaFan 系统代理，无需修改。'
+  fi
+}
+
+show_status() {
+  if /bin/launchctl print "$target" >/dev/null 2>&1; then
+    print '自动维护：已开启（登录后启动）'
+  else
+    print '自动维护：已暂停'
+  fi
+  if (( ${#required} == 0 )); then
+    print '直连规则：尚未添加'
+    return 0
+  fi
+  if ! /usr/bin/pgrep -u "$UID" -x PandaFan >/dev/null; then
+    print 'PandaFan：未运行'
+    return 0
+  fi
+  print 'PandaFan：运行中'
+  local snapshot
+  snapshot=$(/usr/sbin/scutil --proxy) || return 1
+  if ! active_panda_proxy "$snapshot"; then
+    print 'PandaFan 系统代理：未启用或地址端口不匹配'
+    return 0
+  fi
+  local services service rules count=0
+  services=$(/usr/sbin/networksetup -listallnetworkservices) || return 1
+  for service in "${(@f)services}"; do
+    [[ "$service" == 'An asterisk'* || "$service" == \** || -z "$service" ]] && continue
+    target_service "$service" || continue
+    (( count++ ))
+    rules=$(/usr/sbin/networksetup -getproxybypassdomains "$service")
+    has_rules "$rules" && print "$service：直连规则完整" || print "$service：直连规则缺失"
+  done
+  (( count )) || print 'PandaFan 系统代理：未启用'
+  if [[ -f "$log" ]]; then
+    print ''
+    print '最近记录：'
+    /usr/bin/tail -n 3 "$log"
+  fi
+}
+
+main() {
+  local action="${1:-status}"
+  if ! load_config; then
+    print -u2 '配置文件无效，已停止本次操作；请在配置页修正。'
+    return 1
+  fi
+  if [[ "$action" == menu ]]; then
+    IFS= read -r action || [[ -n "$action" ]] || return 0
+  fi
+  case "$action" in
+    check) reconcile check ;;
+    repair|'立即修复') reconcile repair || return $?; show_status ;;
+    status|'查看状态') show_status ;;
+    enable|'开启自动维护')
+      [[ -f "$agent" ]] || { print '工具尚未安装。'; return 1; }
+      /bin/launchctl enable "$target" || return 1
+      /bin/launchctl print "$target" >/dev/null 2>&1 || /bin/launchctl bootstrap "gui/$UID" "$agent" || return 1
+      reconcile repair || return $?
+      show_status ;;
+    pause|'暂停自动维护')
+      /bin/launchctl disable "$target" || return 1
+      /bin/launchctl bootout "$target" 2>/dev/null
+      print '自动维护已暂停，登录后也不会自动开启。现有代理例外保留。' ;;
+    *) print -u2 '用法：company-direct {status|repair|enable|pause|check|menu}'; return 2 ;;
+  esac
+}
+
+[[ "$ZSH_EVAL_CONTEXT" == *:file ]] || main "$@"
