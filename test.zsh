@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -eu
-source "${0:A:h}/company-direct"
+source "${0:A:h}/panda-companion"
 required=(example.com '*.example.com' devops.example.com '*.devops.example.com')
 existing=$'localhost\n*.local\ncustom.example\nexample.com'
 merged=$(merge_rules "$existing")

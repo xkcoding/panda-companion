@@ -4,9 +4,17 @@
 
 PandaFan 的轻量配套助手。原生 macOS 菜单栏工具，提供直连规则维护与网络兼容性检查；非 PandaFan 官方产品。
 
-## 构建安装
+## 下载安装
 
-需要 macOS、Xcode Command Line Tools 和 Python 3。应用部署目标为 macOS 14+；目前已在 macOS 26 的 Apple Silicon 设备上验证，旧系统和 Intel Mac 尚未实机验证。
+在 [Releases](https://github.com/xkcoding/panda-companion/releases) 下载与你的 Mac 匹配的 ZIP：`arm64` 适用于 Apple Silicon，`x86_64` 适用于 Intel。校验文件一并提供。
+
+解压后，先退出正在运行的「熊猫伴行」，再双击 `Install.command`。安装器会保留个人规则、检查间隔和自动维护状态；完成后从 `~/Applications/熊猫伴行.app` 打开。
+
+安装包包含原生安装器，无需 Python 或 Xcode。当前发布包只做临时签名，未进行 Developer ID 签名或 Apple 公证，macOS 可能阻止首次运行；请遵循系统的安全确认流程，不要关闭 Gatekeeper。
+
+## 从源码构建
+
+需要 macOS、Xcode Command Line Tools 和 Python 3。应用部署目标为 macOS 14+；本地交互已在 macOS 26 的 Apple Silicon 设备上验证；CI 分别检查两个 CPU 架构，不能代替所有系统版本的实机交互验证。
 
 ```sh
 git clone https://github.com/xkcoding/panda-companion.git
@@ -40,21 +48,12 @@ python3 install-app.py
 
 由 macOS launchd 调度：网络设置变化触发检查，默认每 10 秒兜底一次。状态正常时走快速检查，只有规则缺失才写入。菜单栏退出后自动维护仍可继续；暂停开关会持久停用维护。网络兼容性只在打开对应页面或手动检查时执行。
 
-## 本机文件
-
-为兼容旧版，内部路径和服务标识保持不变：
-
-- 配置和日志：`~/Library/Application Support/CompanyDirect/`
-- PandaFan 网段备份：`~/Library/Application Support/PandaFan/CompanyDirect-Backups/`
-- 调度：`~/Library/LaunchAgents/local.company-direct.guard.plist`
-- 菜单栏登录项：`~/Library/LaunchAgents/local.company-direct.menu.plist`
-
 ## 开发
 
 - `App.swift`：菜单栏与主面板。
 - `SettingsController.swift` / `CompatibilityPane.swift`：设置与兼容性界面。
 - `DesignSystem.swift`：共用设计 token 和原生组件，设计约定见 [DESIGN.md](DESIGN.md)。
-- `Configuration.swift` / `company-direct`：配置、系统代理例外维护和 launchd 调度。
+- `Configuration.swift` / `panda-companion`：配置、系统代理例外维护和 launchd 调度。
 - `PandaCompatibility.swift`：网段检查、备份、修改与恢复。
 
 运行测试：
@@ -79,3 +78,17 @@ zsh test-all.zsh
 [MIT](LICENSE) · Copyright (c) 2026 Yangkai.Shen
 
 本项目与 PandaFan 官方没有隶属关系。项目图标为独立设计，PandaFan 名称用于说明兼容对象。
+
+## 持续检查与发布
+
+- Push / Pull Request：在两个架构上执行语法检查、测试、完整构建及安装包验证，并上传 ZIP 与 SHA-256 校验和。
+- 手动运行 Release 工作流：构建所选分支的安装包，仅作为 Actions 产物保存，不创建正式 Release。
+- 正式发布：更新 `VERSION`、合并代码，再推送对应 `vX.Y.Z` 标签。标签必须与 `VERSION` 一致；两个架构全部通过后，才会创建 GitHub Release 并上传产物。
+
+```sh
+# VERSION 内容为 1.3.0 时：
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+CI 构建时会验证二进制架构、最低系统版本、签名、包内必要文件、无个人配置，以及临时目录中的安装与升级。发布失败后可重跑；已存在的正式 Release 不会被覆盖。

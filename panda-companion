@@ -238,7 +238,7 @@ main() {
       /bin/launchctl disable "$target" || return 1
       /bin/launchctl bootout "$target" 2>/dev/null
       print '自动维护已暂停，登录后也不会自动开启。现有代理例外保留。' ;;
-    *) print -u2 '用法：company-direct {status|repair|enable|pause|check|menu}'; return 2 ;;
+    *) print -u2 '用法：panda-companion {status|repair|enable|pause|check|menu}'; return 2 ;;
   esac
 }
 

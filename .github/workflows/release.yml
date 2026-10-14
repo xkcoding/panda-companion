@@ -1,0 +1,89 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Release ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate version and architecture
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          python3 - <<'PY'
+          import os, pathlib, re
+          version = pathlib.Path('VERSION').read_text().strip()
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'VERSION must be X.Y.Z'
+          if os.environ['GITHUB_REF_TYPE'] == 'tag':
+              assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag must match VERSION'
+          PY
+      - name: Test, build and verify package
+        run: |
+          python3 -m py_compile build-app.py install-app.py package-release.py
+          for script in panda-companion test.zsh test-all.zsh Install.command; do zsh -n "$script"; done
+          zsh test-all.zsh
+          python3 build-app.py
+          python3 package-release.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    name: Publish verified release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          test "$(find . -name '*.zip' | wc -l)" -eq 2
+          test "$(find . -name '*.sha256' | wc -l)" -eq 2
+          sha256sum --check ./*.sha256
+          cat > notes.md <<'NOTES'
+          熊猫伴行 · Panda Companion
+
+          下载对应架构的 ZIP，解压后运行 Install.command。安装包包含原生安装器，无需 Python 或编译工具链。
+          arm64：Apple Silicon；x86_64：Intel。最低系统目标 macOS 14。
+          应用与安装器为临时签名，尚未经 Developer ID 签名或 Apple 公证。
+          NOTES
+          # Retry only a draft created by an interrupted release; never replace a published release.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft-state; then
+            test "$(cat draft-state)" = true || { echo 'Release is already published; refusing to overwrite.'; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "Panda Companion $RELEASE_TAG" --notes-file notes.md
+          fi
+          gh release upload "$RELEASE_TAG" ./*.zip ./*.sha256 --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

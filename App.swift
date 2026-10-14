@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(pandaChanged(_:)), name: name, object: nil)
         }
         var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
-        store = SCDynamicStoreCreate(nil, "CompanyDirectUI" as CFString, { _, _, info in
+        store = SCDynamicStoreCreate(nil, "PandaCompanionUI" as CFString, { _, _, info in
             guard let info else { return }
             let owner = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
             if owner.panel.window.isVisible { owner.refresh() }
@@ -145,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !busy else { refreshPending = true; return }
         do { configuration = try DirectConfiguration.load() } catch { lastError = error.localizedDescription; render(); return }
         busy = true; lastError = nil; render()
-        let script = base.appendingPathComponent("company-direct").path
+        let script = base.appendingPathComponent("panda-companion").path
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let result: Result<CommandResult, Error> = Result {
                 let result = try LocalCommand.run("/bin/zsh", [script, action])
@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quitApp() { NSApp.terminate(nil) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPanel(); return true }
 }
-@main struct CompanyDirect {
+@main struct PandaCompanion {
     static func main() {
         if let other = NSRunningApplication.runningApplications(withBundleIdentifier: "local.company-direct.app").first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
             other.activate(options: [.activateAllWindows]); return

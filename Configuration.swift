@@ -87,7 +87,7 @@ enum ConfigurationStore {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let file = DirectConfiguration.file
         let agent = home.appendingPathComponent("Library/LaunchAgents/local.company-direct.guard.plist")
-        let script = home.appendingPathComponent("Library/Application Support/CompanyDirect/company-direct").path
+        let script = home.appendingPathComponent("Library/Application Support/CompanyDirect/panda-companion").path
         let target = "gui/\(getuid())/local.company-direct.guard"
         let active = try LocalCommand.run("/bin/launchctl", ["print", target]).code == 0
         let oldConfig = try? Data(contentsOf: file)
